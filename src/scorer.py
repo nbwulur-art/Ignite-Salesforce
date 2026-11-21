@@ -174,7 +174,7 @@ def score_and_sort_leads(cleaned_leads):
 if __name__ == "__main__":
     print("Running lead scorer verification...\n")
     datasets = clean_all_datasets()
-    sample_leads = datasets.get("leads_sample", [])
+    sample_leads = datasets.get("leads_scale", [])
 
     if not sample_leads:
         print("[ERROR] No sample leads found. Verify leads_sample.csv is in Data/.")

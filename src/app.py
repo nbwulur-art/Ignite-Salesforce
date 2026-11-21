@@ -20,7 +20,6 @@ import io
 import os
 import sys
 import time
-import matplotlib.pyplot as plt
 import streamlit as st
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -45,11 +44,11 @@ THEME = {
     "brand": "#2563EB",           # Cobalt highlight accent
     "tiers": {
         "CRITICAL": "#E11D48",    # Crimson rose
-        "HIGH": "#D97706",        # Warm amber
+        "HIGH": "#F59E0B",        # Warm amber
         "MEDIUM": "#2563EB",      # Royal blue
         "LOW": "#94A3B8",         # Cool slate
     },
-    "regions": ["#0F172A", "#2563EB", "#0D9488", "#CBD5E1"],
+    "regions": ["#0F172A", "#2563EB", "#0D9488", "#94A3B8"],
 }
 
 # ---------------------------------------------------------------------------
@@ -121,6 +120,27 @@ st.markdown(
         padding: 0.35rem 0.8rem;
         border-radius: 999px;
         white-space: nowrap;
+    }}
+
+    /* Chart Card Wrapper */
+    .chart-card {{
+        background: {THEME["surface"]};
+        border: 1px solid {THEME["border"]};
+        border-radius: 12px;
+        padding: 1.1rem 1.25rem 0.5rem 1.25rem;
+        box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
+        margin-bottom: 1rem;
+    }}
+    .chart-title {{
+        font-size: 0.95rem;
+        font-weight: 700;
+        color: {THEME["text_primary"]};
+        margin: 0 0 0.15rem 0;
+    }}
+    .chart-sub {{
+        font-size: 0.78rem;
+        color: {THEME["text_muted"]};
+        margin: 0 0 0.75rem 0;
     }}
 
     /* Minimalist KPI Cards */
@@ -219,44 +239,105 @@ def dicts_to_csv_bytes(records, columns):
     return buffer.getvalue().encode("utf-8")
 
 
-def plot_minimal_bar_chart(labels, values, colors, title):
-    """Render a clean, publication-grade Matplotlib bar chart matching THEME."""
-    fig, ax = plt.subplots(figsize=(6, 3.8), dpi=140)
-    fig.patch.set_facecolor(THEME["surface"])
-    ax.set_facecolor(THEME["surface"])
+def render_aesthetic_bar_chart(labels, values, colors, title, subtitle):
+    """Render an interactive, rounded-bar Vega-Lite chart with zero external dependencies."""
+    total = sum(values) or 1
+    records = [
+        {
+            "Category": label,
+            "Leads": val,
+            "Share": f"{(val / total * 100):.1f}%",
+            "Formatted": f"{val:,}",
+            "Color": color,
+        }
+        for label, val, color in zip(labels, values, colors)
+    ]
 
-    bars = ax.bar(labels, values, color=colors, width=0.5, zorder=3)
+    st.markdown(
+        f"""
+        <div class="chart-card">
+            <p class="chart-title">{title}</p>
+            <p class="chart-sub">{subtitle}</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
-    ax.set_title(title, fontsize=11, fontweight="bold", loc="left", pad=14, color=THEME["text_primary"])
-    ax.tick_params(axis="x", colors=THEME["text_primary"], labelsize=9, length=0, pad=8)
-    ax.tick_params(axis="y", colors=THEME["text_muted"], labelsize=8.5, length=0)
-
-    for spine in ["top", "right", "left"]:
-        ax.spines[spine].set_visible(False)
-    ax.spines["bottom"].set_color(THEME["border"])
-    ax.spines["bottom"].set_linewidth(1)
-
-    ax.grid(axis="y", linestyle="-", linewidth=0.6, color=THEME["border"], zorder=0)
-
-    max_val = max(values) if values else 1
-    ax.set_ylim(0, max_val * 1.18 if max_val > 0 else 10)
-
-    for bar in bars:
-        height = bar.get_height()
-        ax.annotate(
-            f"{int(height):,}",
-            xy=(bar.get_x() + bar.get_width() / 2, height),
-            xytext=(0, 5),
-            textcoords="offset points",
-            ha="center",
-            va="bottom",
-            fontsize=8.5,
-            fontweight="bold",
-            color=THEME["text_primary"],
-        )
-
-    fig.tight_layout()
-    return fig
+    spec = {
+        "height": 290,
+        "background": "transparent",
+        "layer": [
+            {
+                "mark": {
+                    "type": "bar",
+                    "cornerRadiusTopLeft": 7,
+                    "cornerRadiusTopRight": 7,
+                    "width": {"band": 0.52},
+                },
+                "encoding": {
+                    "x": {
+                        "field": "Category",
+                        "type": "nominal",
+                        "sort": labels,
+                        "axis": {
+                            "title": None,
+                            "labelAngle": 0,
+                            "labelFont": "Plus Jakarta Sans, sans-serif",
+                            "labelFontSize": 12,
+                            "labelFontWeight": 600,
+                            "labelColor": THEME["text_primary"],
+                            "domainColor": THEME["border"],
+                            "tickSize": 0,
+                            "labelPadding": 10,
+                        },
+                    },
+                    "y": {
+                        "field": "Leads",
+                        "type": "quantitative",
+                        "scale": {"padding": 15},
+                        "axis": {
+                            "title": None,
+                            "grid": True,
+                            "gridColor": THEME["border"],
+                            "gridDash": [3, 3],
+                            "domain": False,
+                            "tickSize": 0,
+                            "labelFont": "JetBrains Mono, monospace",
+                            "labelFontSize": 11,
+                            "labelColor": THEME["text_muted"],
+                        },
+                    },
+                    "color": {
+                        "field": "Color",
+                        "type": "nominal",
+                        "scale": None,
+                    },
+                    "tooltip": [
+                        {"field": "Category", "type": "nominal"},
+                        {"field": "Formatted", "type": "nominal", "title": "Lead Count"},
+                        {"field": "Share", "type": "nominal", "title": "Share of Total"},
+                    ],
+                },
+            },
+            {
+                "mark": {
+                    "type": "text",
+                    "dy": -9,
+                    "font": "JetBrains Mono, monospace",
+                    "fontSize": 11.5,
+                    "fontWeight": 600,
+                    "color": THEME["text_primary"],
+                },
+                "encoding": {
+                    "x": {"field": "Category", "type": "nominal", "sort": labels},
+                    "y": {"field": "Leads", "type": "quantitative"},
+                    "text": {"field": "Formatted", "type": "nominal"},
+                },
+            },
+        ],
+        "config": {"view": {"stroke": "transparent"}},
+    }
+    st.vega_lite_chart(records, spec, use_container_width=True)
 
 
 # ---------------------------------------------------------------------------
@@ -576,17 +657,25 @@ with tab_analytics:
     tier_colors = [THEME["tiers"][t] for t in tier_order]
 
     with c_left:
-        fig1 = plot_minimal_bar_chart(tier_order, tier_counts, tier_colors, "Leads by Priority Tier")
-        st.pyplot(fig1)
-        plt.close(fig1)
+        render_aesthetic_bar_chart(
+            labels=tier_order,
+            values=tier_counts,
+            colors=tier_colors,
+            title="Leads by Priority Tier",
+            subtitle="Distribution across urgency tiers (hover bars for percentage share)",
+        )
 
     region_order = ["North America", "Europe", "Asia-Pacific", "Unknown"]
     region_counts = [sum(1 for l in routed_leads if l["Region"] == reg) for reg in region_order]
 
     with c_right:
-        fig2 = plot_minimal_bar_chart(region_order, region_counts, THEME["regions"], "Leads by Region")
-        st.pyplot(fig2)
-        plt.close(fig2)
+        render_aesthetic_bar_chart(
+            labels=region_order,
+            values=region_counts,
+            colors=THEME["regions"],
+            title="Leads by Region",
+            subtitle="Geographic volume after cleaner.py normalization",
+        )
 
     st.markdown("#### Routing Breakdown by Tier")
     summary_rows = []

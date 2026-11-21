@@ -81,22 +81,23 @@ def normalize_key(raw_value):
 
 def clean_int(raw_value, default=0, allow_k_suffix=False):
     """
-    Safely convert messy numeric strings into non-negative integers.
+    Safely convert messy numeric strings into non-negative integers (or default).
 
     Why it works:
         Both leads (Company_Size) and reps (Current_Capacity, Max_Capacity) can
         contain comma-formatted numbers ("1,000"), shorthand suffixes ("5k"),
-        negative values, or missing placeholders ("None", "N/A", ""). Stripping
-        commas, optionally expanding "k" multipliers, catching ValueError, and
-        clamping below zero ensures downstream math never crashes.
+        negative values, or missing placeholders ("None", "N/A", ""). Returning
+        `default` (such as None for missing Company_Size) lets scorer.py distinguish
+        blank company sizes (+20 pts) from small companies (+0 pts), while
+        clamping valid numbers at 0 prevents negative capacities.
 
     Args:
         raw_value (str): The raw text value from a numeric CSV column.
-        default (int): Fallback integer if the value is missing or unparseable.
+        default (int | None): Fallback value if missing or unparseable.
         allow_k_suffix (bool): Whether to parse shorthand like "5k" as 5000.
 
     Returns:
-        int: A sanitized non-negative integer.
+        int | None: A sanitized non-negative integer, or `default`.
     """
     key = normalize_key(raw_value)
     if key in ("", "none", "unknown", "n/a", "null"):
@@ -142,14 +143,14 @@ def clean_lead_record(row):
 
     Why it works:
         Applying deterministic alias lookups and type conversions per row ensures
-        every lead dictionary exiting the ingestion layer follows an identical
-        schema before entering the scoring and routing engines.
+        every lead dictionary exiting the ingestion layer follows the exact Data
+        Dictionary schema before entering the scoring and routing engines.
 
     Args:
         row (dict): A raw row dictionary produced by csv.DictReader.
 
     Returns:
-        dict: A sanitized lead dictionary with standardized strings, ints, and bools.
+        dict: A sanitized lead dictionary with standardized strings, ints/None, and bools.
     """
     region_key = normalize_key(row.get("Region"))
     language_key = normalize_key(row.get("Language"))
@@ -162,7 +163,7 @@ def clean_lead_record(row):
         "Region": REGION_ALIASES.get(region_key, "Unknown"),
         "Language": LANGUAGE_ALIASES.get(language_key, "Unknown"),
         "Industry_Vertical": INDUSTRY_ALIASES.get(industry_key, "Unknown"),
-        "Company_Size": clean_int(row.get("Company_Size"), default=0, allow_k_suffix=True),
+        "Company_Size": clean_int(row.get("Company_Size"), default=None, allow_k_suffix=True),
         "Recent_Activity": clean_activity(row.get("Recent_Activity")),
         "VIP_Referral": VIP_ALIASES.get(vip_key, False),
     }
@@ -173,11 +174,10 @@ def clean_rep_record(row):
     Clean and normalize all fields of a single sales representative record.
 
     Why it works:
-        Representatives must match leads on exact Region, Language, and Industry
-        strings, while adhering to seniority gates and maximum capacity limits.
-        Normalizing skill fields with the exact same alias maps as leads prevents
-        mismatch bugs, and clamping Current_Capacity <= Max_Capacity prevents
-        invalid capacity states.
+        Matches the exact Data Dictionary schema ('Name',
+        'Industry_Vertical_Expertise', 'Seniority_Level') while normalizing
+        skill strings with the exact same alias dictionaries as leads so routing
+        lookups never fail due to casing or typo mismatches.
 
     Args:
         row (dict): A raw row dictionary produced by csv.DictReader.
@@ -185,24 +185,29 @@ def clean_rep_record(row):
     Returns:
         dict: A sanitized representative dictionary ready for skill indexing.
     """
-    raw_industry = row.get("Industry_Expertise") or row.get("Industry_Vertical")
-    raw_name = row.get("Rep_Name") or row.get("Name") or ""
+    raw_industry = (
+        row.get("Industry_Vertical_Expertise")
+        or row.get("Industry_Expertise")
+        or row.get("Industry_Vertical")
+    )
+    raw_seniority = row.get("Seniority_Level") or row.get("Seniority")
+    raw_name = row.get("Name") or row.get("Rep_Name") or ""
 
     region_key = normalize_key(row.get("Region"))
     language_key = normalize_key(row.get("Language"))
     industry_key = normalize_key(raw_industry)
-    seniority_key = normalize_key(row.get("Seniority"))
+    seniority_key = normalize_key(raw_seniority)
 
     max_cap = clean_int(row.get("Max_Capacity"), default=0, allow_k_suffix=False)
     curr_cap = clean_int(row.get("Current_Capacity"), default=0, allow_k_suffix=False)
 
     return {
         "Rep_ID": str(row.get("Rep_ID", "")).strip(),
-        "Rep_Name": str(raw_name).strip(),
+        "Name": str(raw_name).strip(),
         "Region": REGION_ALIASES.get(region_key, "Unknown"),
         "Language": LANGUAGE_ALIASES.get(language_key, "Unknown"),
-        "Industry_Expertise": INDUSTRY_ALIASES.get(industry_key, "Unknown"),
-        "Seniority": SENIORITY_ALIASES.get(seniority_key, "Junior"),
+        "Industry_Vertical_Expertise": INDUSTRY_ALIASES.get(industry_key, "Unknown"),
+        "Seniority_Level": SENIORITY_ALIASES.get(seniority_key, "Junior"),
         "Current_Capacity": min(curr_cap, max_cap),
         "Max_Capacity": max_cap,
     }
@@ -275,17 +280,18 @@ def save_clean_csv(records, output_path):
         writer.writerows(records)
 
 
-def clean_all_datasets(data_dir=None):
+def clean_all_datasets(data_dir=None, export_csv=False):
     """
-    Locate, clean, and export all four sample and scale CSV datasets.
+    Locate, clean, and optionally export all four sample and scale CSV datasets.
 
     Why it works:
-        Searches the current working directory, `<repo_root>/data/`, and
-        `<repo_root>/` automatically so CSV files are found regardless of where
-        the script is executed from, and exports cleaned copies to `cleaned_data/`.
+        Searches the current working directory, `<repo_root>/data/`, `<repo_root>/Data/`,
+        and `<repo_root>/` automatically so CSV files are found regardless of folder
+        casing or working directory.
 
     Args:
         data_dir (str, optional): Optional explicit directory to search first.
+        export_csv (bool): Whether to write cleaned CSVs to `cleaned_data/`.
 
     Returns:
         dict: Dataset names mapped to lists of cleaned records.
@@ -295,7 +301,16 @@ def clean_all_datasets(data_dir=None):
     cwd = os.getcwd()
 
     search_dirs = []
-    for d in [data_dir, cwd, os.path.join(cwd, "data"), os.path.join(repo_root, "data"), repo_root, script_dir]:
+    for d in [
+        data_dir,
+        cwd,
+        os.path.join(cwd, "data"),
+        os.path.join(cwd, "Data"),
+        os.path.join(repo_root, "data"),
+        os.path.join(repo_root, "Data"),
+        repo_root,
+        script_dir,
+    ]:
         if d and d not in search_dirs:
             search_dirs.append(d)
 
@@ -320,24 +335,22 @@ def clean_all_datasets(data_dir=None):
         if found_path:
             cleaned = loader_fn(found_path)
             datasets[key] = cleaned
-            out_file = os.path.join(output_dir, f"cleaned_{filename}")
-            save_clean_csv(cleaned, out_file)
-            print(f"[OK] Loaded {len(cleaned)} rows from '{found_path}' -> saved to '{out_file}'")
+            if export_csv:
+                out_file = os.path.join(output_dir, f"cleaned_{filename}")
+                save_clean_csv(cleaned, out_file)
+                print(f"[OK] Loaded {len(cleaned)} rows from '{found_path}' -> saved to '{out_file}'")
+            else:
+                print(f"[OK] Loaded {len(cleaned)} rows from '{found_path}'")
         else:
             print(f"[MISSING] Could not find '{filename}'")
             datasets[key] = []
 
-    if all(len(v) == 0 for v in datasets.values()):
-        print("\n[DEBUG] Searched these folders for CSV files:")
-        for d in search_dirs:
-            print(f"  - {d}")
-
     return datasets
 
-# test if the code works
+
 if __name__ == "__main__":
     print("Running data cleaner...\n")
-    all_data = clean_all_datasets()
+    all_data = clean_all_datasets(export_csv=True)
 
     for name, records in all_data.items():
         if records:
@@ -345,7 +358,14 @@ if __name__ == "__main__":
             print("Sample row:", records[0])
             check_cols = [
                 col
-                for col in ["Region", "Language", "Industry_Vertical", "Industry_Expertise", "Seniority", "Recent_Activity"]
+                for col in [
+                    "Region",
+                    "Language",
+                    "Industry_Vertical",
+                    "Industry_Vertical_Expertise",
+                    "Seniority_Level",
+                    "Recent_Activity",
+                ]
                 if col in records[0]
             ]
             for col in check_cols:

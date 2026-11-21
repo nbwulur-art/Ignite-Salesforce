@@ -30,7 +30,7 @@ Basic Algorithm:
 from collections import defaultdict
 import time
 
-from cleaner import clean_all_datasets
+from cleaner import load_scale_datasets
 from scorer import score_and_sort_leads
 
 
@@ -44,12 +44,6 @@ def build_rep_index(reps):
         with sub-lists for `Senior`, `Manager`, and `Junior`. This eliminates nested
         loops during routing, allowing 50,000+ leads to find eligible reps in O(1)
         average lookup time.
-
-    Args:
-        reps (list[dict]): Sanitized representative dictionaries from `cleaner.py`.
-
-    Returns:
-        dict: Nested hash map `{(region, language, industry): {seniority: [rep, ...]}}`.
     """
     index = defaultdict(lambda: {"Senior": [], "Manager": [], "Junior": []})
     for rep in reps:
@@ -77,12 +71,6 @@ def select_best_rep(candidates):
         Managers: 5-10), balancing by utilization percentage keeps workloads fair
         relative to each rep's bandwidth, while `(Current_Capacity, Rep_ID)` breaks
         exact ties deterministically.
-
-    Args:
-        candidates (list[dict]): Eligible reps matching skills and seniority rules.
-
-    Returns:
-        dict | None: The selected rep dictionary, or None if all candidates are full.
     """
     available = [r for r in candidates if r["Current_Capacity"] < r["Max_Capacity"]]
     if not available:
@@ -109,16 +97,6 @@ def route_leads(scored_leads, cleaned_reps):
         lookup, enforces the CRITICAL seniority hierarchy (Senior -> Manager, never
         Junior), updates the chosen rep's live `Current_Capacity`, and logs any
         unassignable leads into `manager_review` with an audit reason.
-
-    Args:
-        scored_leads (list[dict]): Priority-sorted leads from `scorer.py`.
-        cleaned_reps (list[dict]): Sanitized representative records from `cleaner.py`.
-
-    Returns:
-        dict: Summary payload containing:
-            - `routed_leads` (list[dict]): Every lead enriched with assignment details.
-            - `manager_review` (list[dict]): Subset of leads routed to overflow review.
-            - `reps` (list[dict]): Updated rep records with final capacities.
     """
     reps = [dict(r) for r in cleaned_reps]
     rep_index = build_rep_index(reps)
@@ -133,7 +111,6 @@ def route_leads(scored_leads, cleaned_reps):
         industry = record["Industry_Vertical"]
         tier = record["Priority_Tier"]
 
-        # Missing critical routing dimensions cannot match a strict multi-skill rep
         if "Unknown" in (region, language, industry):
             record["Assigned_Rep_ID"] = "UNASSIGNED"
             record["Assigned_Rep_Name"] = "Manager Review"
@@ -149,12 +126,10 @@ def route_leads(scored_leads, cleaned_reps):
 
         if skill_bucket:
             if tier == "CRITICAL":
-                # Seniority Constraint: Try Senior first, fallback to Manager; NEVER Junior
                 chosen_rep = select_best_rep(skill_bucket["Senior"])
                 if chosen_rep is None:
                     chosen_rep = select_best_rep(skill_bucket["Manager"])
             else:
-                # Non-Critical leads can be assigned to any matching rep with capacity
                 all_eligible = (
                     skill_bucket["Junior"]
                     + skill_bucket["Senior"]
@@ -192,44 +167,28 @@ def route_leads(scored_leads, cleaned_reps):
 
 
 if __name__ == "__main__":
-    print("Running full end-to-end routing verification...\n")
-    datasets = clean_all_datasets()
+    print("Running scale routing verification (50,000 leads / 1,600 reps)...\n")
+    datasets = load_scale_datasets()
+    leads = datasets["leads_scale"]
+    reps = datasets["reps_scale"]
 
-    for label, leads_key, reps_key in [
-        ("SAMPLE (100 Leads)", "leads_sample", "reps_sample"),
-        ("SCALE (50,000 Leads)", "leads_scale", "reps_scale"),
-    ]:
-        leads = datasets.get(leads_key, [])
-        reps = datasets.get(reps_key, [])
-        if not leads or not reps:
-            continue
-
+    if not leads or not reps:
+        print("[ERROR] Missing leads_scale.csv or reps_scale.csv in Data/.")
+    else:
         start_time = time.perf_counter()
         scored = score_and_sort_leads(leads)
         result = route_leads(scored, reps)
         elapsed_ms = (time.perf_counter() - start_time) * 1000
 
         assigned_count = len(result["routed_leads"]) - len(result["manager_review"])
-        print(f"=== {label} ===")
-        print(f"  Execution Time : {elapsed_ms:.2f} ms")
-        print(f"  Assigned Leads : {assigned_count} / {len(leads)}")
-        print(f"  Manager Review : {len(result['manager_review'])} leads")
-
-        # Verify zero Critical leads were ever assigned to a Junior rep
         junior_criticals = [
             l for l in result["routed_leads"]
             if l["Priority_Tier"] == "CRITICAL" and l["Assigned_Rep_Seniority"] == "Junior"
         ]
-        print(f"  Junior Critical Violations: {len(junior_criticals)}")
-        print()
 
-    # Print sample rep capacity utilization
-    sample_scored = score_and_sort_leads(datasets.get("leads_sample", []))
-    sample_result = route_leads(sample_scored, datasets.get("reps_sample", []))
-    print("=== Sample Representative Utilization ===")
-    for rep in sample_result["reps"]:
-        print(
-            f"  {rep['Rep_ID']} | {rep['Name']:<18} | {rep['Seniority_Level']:<7} | "
-            f"{rep['Region']:<13} | {rep['Language']:<7} | {rep['Industry_Vertical_Expertise']:<13} | "
-            f"Load: {rep['Current_Capacity']}/{rep['Max_Capacity']}"
-        )
+        print("=== SCALE BENCHMARK RESULTS ===")
+        print(f"  Execution Time            : {elapsed_ms:.2f} ms")
+        print(f"  Total Leads Processed     : {len(leads)}")
+        print(f"  Assigned Leads            : {assigned_count}")
+        print(f"  Manager Review Overflow   : {len(result['manager_review'])}")
+        print(f"  Junior Critical Violations: {len(junior_criticals)}")

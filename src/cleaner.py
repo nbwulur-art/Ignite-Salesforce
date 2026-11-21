@@ -1,3 +1,12 @@
+"""
+Data Sanitization & Normalization Engine (src/cleaner.py)
+
+Purpose:
+    Ingests raw customer lead and sales representative CSVs (`leads_scale.csv`
+    and `reps_scale.csv`), standardizes casing, whitespace, and unstandardized
+    aliases, parses messy numeric fields, and applies safe missing-data fallbacks.
+"""
+
 import csv
 import os
 import re
@@ -49,7 +58,7 @@ SENIORITY_ALIASES = {
 VIP_ALIASES = {
     "true": True,
     "false": False,
-    "unknown": False,  # Conservative fallback: unverified VIP status defaults to False
+    "unknown": False,
     "": False,
     "n/a": False,
 }
@@ -59,18 +68,10 @@ def normalize_key(raw_value):
     """
     Standardize a raw string into a clean lookup key.
 
-    Why it works:
-        Raw CSV cells frequently include outer spaces, mixed capitalization, or
-        repeated internal whitespace (e.g., "ASIA  PACIFIC"). Stripping outer
-        spaces, collapsing internal runs of whitespace into a single space, and
-        lowercasing guarantees all variations of a label map to one consistent
-        dictionary key in O(1) lookup time.
-
-    Args:
-        raw_value (str): The raw cell value extracted from a CSV file.
-
-    Returns:
-        str: A trimmed, single-spaced, lowercase string (or "" if None).
+    How it works:
+        Strips leading/trailing whitespace, collapses consecutive internal spaces
+        into one space, and converts to lowercase so all alias variations resolve
+        to an identical dictionary key in O(1) time.
     """
     if raw_value is None:
         return ""
@@ -83,21 +84,11 @@ def clean_int(raw_value, default=0, allow_k_suffix=False):
     """
     Safely convert messy numeric strings into non-negative integers (or default).
 
-    Why it works:
-        Both leads (Company_Size) and reps (Current_Capacity, Max_Capacity) can
-        contain comma-formatted numbers ("1,000"), shorthand suffixes ("5k"),
-        negative values, or missing placeholders ("None", "N/A", ""). Returning
-        `default` (such as None for missing Company_Size) lets scorer.py distinguish
-        blank company sizes (+20 pts) from small companies (+0 pts), while
-        clamping valid numbers at 0 prevents negative capacities.
-
-    Args:
-        raw_value (str): The raw text value from a numeric CSV column.
-        default (int | None): Fallback value if missing or unparseable.
-        allow_k_suffix (bool): Whether to parse shorthand like "5k" as 5000.
-
-    Returns:
-        int | None: A sanitized non-negative integer, or `default`.
+    How it works:
+        Handles comma-formatted strings ("1,000"), shorthand suffixes ("5k"),
+        and missing placeholders ("None", "N/A", ""). Returning `default` (None
+        for missing Company_Size) lets scorer.py distinguish blank forms (+20 pts)
+        from small businesses (+0 pts), while clamping valid numbers at 0.
     """
     key = normalize_key(raw_value)
     if key in ("", "none", "unknown", "n/a", "null"):
@@ -119,17 +110,10 @@ def clean_activity(raw_activity):
     """
     Standardize customer recent activity labels and unify missing indicators.
 
-    Why it works:
-        Activity strings contain leading whitespace (" Contact Sales"), mixed
-        casing, blank cells, and null markers ("N/A", "Unknown"). Converting all
-        missing indicators to "None" prevents false point awards during scoring,
-        while title-casing valid actions ensures exact matches in the scoring table.
-
-    Args:
-        raw_activity (str): The raw value from the Recent_Activity column.
-
-    Returns:
-        str: Standardized activity string, or "None" when no activity is recorded.
+    How it works:
+        Unifies blank cells and null markers ("N/A", "Unknown") into "None"
+        to prevent false scoring awards, and title-cases valid actions for
+        exact dictionary matching in scorer.py.
     """
     key = normalize_key(raw_activity)
     if key in ("", "n/a", "unknown", "none", "null"):
@@ -141,16 +125,9 @@ def clean_lead_record(row):
     """
     Clean and normalize all fields of a single prospective lead record.
 
-    Why it works:
-        Applying deterministic alias lookups and type conversions per row ensures
-        every lead dictionary exiting the ingestion layer follows the exact Data
-        Dictionary schema before entering the scoring and routing engines.
-
-    Args:
-        row (dict): A raw row dictionary produced by csv.DictReader.
-
-    Returns:
-        dict: A sanitized lead dictionary with standardized strings, ints/None, and bools.
+    How it works:
+        Applies deterministic O(1) alias lookups and type conversions per row so
+        every lead dictionary conforms strictly to the Data Dictionary schema.
     """
     region_key = normalize_key(row.get("Region"))
     language_key = normalize_key(row.get("Language"))
@@ -173,17 +150,10 @@ def clean_rep_record(row):
     """
     Clean and normalize all fields of a single sales representative record.
 
-    Why it works:
-        Matches the exact Data Dictionary schema ('Name',
-        'Industry_Vertical_Expertise', 'Seniority_Level') while normalizing
-        skill strings with the exact same alias dictionaries as leads so routing
-        lookups never fail due to casing or typo mismatches.
-
-    Args:
-        row (dict): A raw row dictionary produced by csv.DictReader.
-
-    Returns:
-        dict: A sanitized representative dictionary ready for skill indexing.
+    How it works:
+        Normalizes Region, Language, Industry_Vertical_Expertise, and
+        Seniority_Level using the same alias maps as leads, and clamps
+        Current_Capacity <= Max_Capacity to prevent invalid load states.
     """
     raw_industry = (
         row.get("Industry_Vertical_Expertise")
@@ -214,19 +184,7 @@ def clean_rep_record(row):
 
 
 def load_and_clean_leads(filepath):
-    """
-    Load a leads CSV file from disk and return a list of sanitized lead records.
-
-    Why it works:
-        Streams rows sequentially in O(n) time with utf-8-sig decoding to strip
-        hidden Excel BOM characters without modifying the source file on disk.
-
-    Args:
-        filepath (str): Path to leads_sample.csv or leads_scale.csv.
-
-    Returns:
-        list[dict]: Cleaned lead dictionaries.
-    """
+    """Stream and sanitize all rows from a leads CSV file in O(N) time."""
     cleaned_leads = []
     with open(filepath, mode="r", encoding="utf-8-sig", newline="") as csv_file:
         reader = csv.DictReader(csv_file)
@@ -236,19 +194,7 @@ def load_and_clean_leads(filepath):
 
 
 def load_and_clean_reps(filepath):
-    """
-    Load a representatives CSV file from disk and return a list of sanitized rep records.
-
-    Why it works:
-        Processes all representative records in a single O(m) pass so the routing
-        engine can immediately index them by skill tuple and seniority.
-
-    Args:
-        filepath (str): Path to reps_sample.csv or reps_scale.csv.
-
-    Returns:
-        list[dict]: Cleaned representative dictionaries.
-    """
+    """Stream and sanitize all rows from a representatives CSV file in O(M) time."""
     cleaned_reps = []
     with open(filepath, mode="r", encoding="utf-8-sig", newline="") as csv_file:
         reader = csv.DictReader(csv_file)
@@ -257,44 +203,14 @@ def load_and_clean_reps(filepath):
     return cleaned_reps
 
 
-def save_clean_csv(records, output_path):
+def load_scale_datasets(data_dir=None):
     """
-    Write a list of cleaned record dictionaries out to a new CSV file.
+    Locate and clean `leads_scale.csv` and `reps_scale.csv`.
 
-    Why it works:
-        Uses csv.DictWriter to serialize standardized dictionaries back into a
-        clean, Excel-compatible CSV file using the exact keys of the first record,
-        enabling easy visual inspection and audit trails without overwriting raw data.
-
-    Args:
-        records (list[dict]): Cleaned records to write.
-        output_path (str): Destination file path for the exported CSV.
-    """
-    if not records:
-        return
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    fieldnames = list(records[0].keys())
-    with open(output_path, mode="w", encoding="utf-8", newline="") as out_file:
-        writer = csv.DictWriter(out_file, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(records)
-
-
-def clean_all_datasets(data_dir=None, export_csv=False):
-    """
-    Locate, clean, and optionally export all four sample and scale CSV datasets.
-
-    Why it works:
-        Searches the current working directory, `<repo_root>/data/`, `<repo_root>/Data/`,
-        and `<repo_root>/` automatically so CSV files are found regardless of folder
-        casing or working directory.
-
-    Args:
-        data_dir (str, optional): Optional explicit directory to search first.
-        export_csv (bool): Whether to write cleaned CSVs to `cleaned_data/`.
-
-    Returns:
-        dict: Dataset names mapped to lists of cleaned records.
+    How it works:
+        Searches the current working directory, `data/`, `Data/`, and the
+        repository root automatically so the 50,000-lead and 1,600-rep scale
+        files load cleanly regardless of where the script is launched.
     """
     script_dir = os.path.dirname(os.path.abspath(__file__))
     repo_root = os.path.dirname(script_dir)
@@ -315,15 +231,11 @@ def clean_all_datasets(data_dir=None, export_csv=False):
             search_dirs.append(d)
 
     file_map = {
-        "leads_sample": ("leads_sample.csv", load_and_clean_leads),
-        "reps_sample": ("reps_sample.csv", load_and_clean_reps),
         "leads_scale": ("leads_scale.csv", load_and_clean_leads),
         "reps_scale": ("reps_scale.csv", load_and_clean_reps),
     }
 
-    output_dir = os.path.join(repo_root, "cleaned_data")
     datasets = {}
-
     for key, (filename, loader_fn) in file_map.items():
         found_path = None
         for folder in search_dirs:
@@ -333,14 +245,7 @@ def clean_all_datasets(data_dir=None, export_csv=False):
                 break
 
         if found_path:
-            cleaned = loader_fn(found_path)
-            datasets[key] = cleaned
-            if export_csv:
-                out_file = os.path.join(output_dir, f"cleaned_{filename}")
-                save_clean_csv(cleaned, out_file)
-                print(f"[OK] Loaded {len(cleaned)} rows from '{found_path}' -> saved to '{out_file}'")
-            else:
-                print(f"[OK] Loaded {len(cleaned)} rows from '{found_path}'")
+            datasets[key] = loader_fn(found_path)
         else:
             print(f"[MISSING] Could not find '{filename}'")
             datasets[key] = []
@@ -349,25 +254,6 @@ def clean_all_datasets(data_dir=None, export_csv=False):
 
 
 if __name__ == "__main__":
-    print("Running data cleaner...\n")
-    all_data = clean_all_datasets(export_csv=True)
-
-    for name, records in all_data.items():
-        if records:
-            print(f"\n=== {name} ({len(records)} records) ===")
-            print("Sample row:", records[0])
-            check_cols = [
-                col
-                for col in [
-                    "Region",
-                    "Language",
-                    "Industry_Vertical",
-                    "Industry_Vertical_Expertise",
-                    "Seniority_Level",
-                    "Recent_Activity",
-                ]
-                if col in records[0]
-            ]
-            for col in check_cols:
-                uniques = sorted(set(str(r[col]) for r in records))
-                print(f"  {col}: {uniques}")
+    data = load_scale_datasets()
+    print(f"Cleaned leads_scale: {len(data['leads_scale'])} records")
+    print(f"Cleaned reps_scale : {len(data['reps_scale'])} records")

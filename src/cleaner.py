@@ -59,7 +59,7 @@ def normalize_key(raw_value):
     """
     Standardize a raw string into a clean lookup key.
 
-    How this works:
+    Why it works:
         Raw CSV cells frequently include outer spaces, mixed capitalization, or
         repeated internal whitespace (e.g., "ASIA  PACIFIC"). Stripping outer
         spaces, collapsing internal runs of whitespace into a single space, and
@@ -185,7 +185,6 @@ def clean_rep_record(row):
     Returns:
         dict: A sanitized representative dictionary ready for skill indexing.
     """
-    # Support slight column header variations just in case (e.g. Industry_Expertise vs Industry_Vertical)
     raw_industry = row.get("Industry_Expertise") or row.get("Industry_Vertical")
     raw_name = row.get("Rep_Name") or row.get("Name") or ""
 
@@ -253,21 +252,53 @@ def load_and_clean_reps(filepath):
     return cleaned_reps
 
 
-def clean_all_datasets(data_dir="data"):
+def save_clean_csv(records, output_path):
     """
-    Load and clean all four sample and scale CSV datasets in the data directory.
+    Write a list of cleaned record dictionaries out to a new CSV file.
 
     Why it works:
-        Provides a single entry point to batch-clean leads_sample, reps_sample,
-        leads_scale, and reps_scale while skipping any file that is not present yet.
+        Uses csv.DictWriter to serialize standardized dictionaries back into a
+        clean, Excel-compatible CSV file using the exact keys of the first record,
+        enabling easy visual inspection and audit trails without overwriting raw data.
 
     Args:
-        data_dir (str): Directory containing the CSV files (defaults to "data").
+        records (list[dict]): Cleaned records to write.
+        output_path (str): Destination file path for the exported CSV.
+    """
+    if not records:
+        return
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    fieldnames = list(records[0].keys())
+    with open(output_path, mode="w", encoding="utf-8", newline="") as out_file:
+        writer = csv.DictWriter(out_file, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(records)
+
+
+def clean_all_datasets(data_dir=None):
+    """
+    Locate, clean, and export all four sample and scale CSV datasets.
+
+    Why it works:
+        Searches the current working directory, `<repo_root>/data/`, and
+        `<repo_root>/` automatically so CSV files are found regardless of where
+        the script is executed from, and exports cleaned copies to `cleaned_data/`.
+
+    Args:
+        data_dir (str, optional): Optional explicit directory to search first.
 
     Returns:
-        dict: Keys 'leads_sample', 'reps_sample', 'leads_scale', 'reps_scale'
-              mapped to their respective lists of cleaned records.
+        dict: Dataset names mapped to lists of cleaned records.
     """
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    repo_root = os.path.dirname(script_dir)
+    cwd = os.getcwd()
+
+    search_dirs = []
+    for d in [data_dir, cwd, os.path.join(cwd, "data"), os.path.join(repo_root, "data"), repo_root, script_dir]:
+        if d and d not in search_dirs:
+            search_dirs.append(d)
+
     file_map = {
         "leads_sample": ("leads_sample.csv", load_and_clean_leads),
         "reps_sample": ("reps_sample.csv", load_and_clean_reps),
@@ -275,32 +306,48 @@ def clean_all_datasets(data_dir="data"):
         "reps_scale": ("reps_scale.csv", load_and_clean_reps),
     }
 
+    output_dir = os.path.join(repo_root, "cleaned_data")
     datasets = {}
+
     for key, (filename, loader_fn) in file_map.items():
-        full_path = os.path.join(data_dir, filename)
-        if os.path.exists(full_path):
-            datasets[key] = loader_fn(full_path)
+        found_path = None
+        for folder in search_dirs:
+            candidate = os.path.join(folder, filename)
+            if os.path.exists(candidate):
+                found_path = candidate
+                break
+
+        if found_path:
+            cleaned = loader_fn(found_path)
+            datasets[key] = cleaned
+            out_file = os.path.join(output_dir, f"cleaned_{filename}")
+            save_clean_csv(cleaned, out_file)
+            print(f"[OK] Loaded {len(cleaned)} rows from '{found_path}' -> saved to '{out_file}'")
         else:
+            print(f"[MISSING] Could not find '{filename}'")
             datasets[key] = []
+
+    if all(len(v) == 0 for v in datasets.values()):
+        print("\n[DEBUG] Searched these folders for CSV files:")
+        for d in search_dirs:
+            print(f"  - {d}")
+
     return datasets
 
-
-# Run this to test the data in the terminal
-
+# test if the code works
 if __name__ == "__main__":
-    # Run from project root: python src/cleaner.py
-    all_data = clean_all_datasets(data_dir="data")
+    print("Running data cleaner...\n")
+    all_data = clean_all_datasets()
 
     for name, records in all_data.items():
-        print(f"=== {name}: {len(records)} cleaned records ===")
         if records:
+            print(f"\n=== {name} ({len(records)} records) ===")
             print("Sample row:", records[0])
-            # Audit unique categorical values to verify no messy aliases slipped through
             check_cols = [
-                col for col in ["Region", "Language", "Industry_Vertical", "Industry_Expertise", "Seniority", "Recent_Activity"]
+                col
+                for col in ["Region", "Language", "Industry_Vertical", "Industry_Expertise", "Seniority", "Recent_Activity"]
                 if col in records[0]
             ]
             for col in check_cols:
                 uniques = sorted(set(str(r[col]) for r in records))
                 print(f"  {col}: {uniques}")
-        print()

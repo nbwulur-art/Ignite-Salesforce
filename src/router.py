@@ -30,7 +30,7 @@ Basic Algorithm:
 from collections import defaultdict
 import time
 
-from cleaner import load_scale_datasets
+from cleaner import clean_all_datasets
 from scorer import score_and_sort_leads
 
 
@@ -168,7 +168,7 @@ def route_leads(scored_leads, cleaned_reps):
 
 if __name__ == "__main__":
     print("Running scale routing verification (50,000 leads / 1,600 reps)...\n")
-    datasets = load_scale_datasets()
+    datasets = clean_all_datasets()
     leads = datasets["leads_scale"]
     reps = datasets["reps_scale"]
 

@@ -58,7 +58,7 @@ SENIORITY_ALIASES = {
 VIP_ALIASES = {
     "true": True,
     "false": False,
-    "unknown": False,
+    "unknown": False,  # Conservative fallback: unverified VIP status defaults to False
     "": False,
     "n/a": False,
 }
@@ -203,14 +203,14 @@ def load_and_clean_reps(filepath):
     return cleaned_reps
 
 
-def load_scale_datasets(data_dir=None):
+def clean_all_datasets(data_dir=None):
     """
     Locate and clean `leads_scale.csv` and `reps_scale.csv`.
 
     How it works:
-        Searches the current working directory, `data/`, `Data/`, and the
-        repository root automatically so the 50,000-lead and 1,600-rep scale
-        files load cleanly regardless of where the script is launched.
+        Keeps the original function signature so existing imports in `scorer.py`
+        and `router.py` continue working without changes, while loading only the
+        scale datasets (`leads_scale.csv` and `reps_scale.csv`).
     """
     script_dir = os.path.dirname(os.path.abspath(__file__))
     repo_root = os.path.dirname(script_dir)
@@ -254,6 +254,6 @@ def load_scale_datasets(data_dir=None):
 
 
 if __name__ == "__main__":
-    data = load_scale_datasets()
+    data = clean_all_datasets()
     print(f"Cleaned leads_scale: {len(data['leads_scale'])} records")
     print(f"Cleaned reps_scale : {len(data['reps_scale'])} records")
